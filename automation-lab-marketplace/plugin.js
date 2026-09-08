@@ -2,7 +2,6 @@ import {
   atom,
   Badge,
   Button,
-  Codicon,
   ErrorState,
   Input,
   Loader,
@@ -281,17 +280,60 @@ function createPage(ctx, scopeState, refreshScope) {
 
     if (state.isLoading) return jsx(Loader, { type: 'lemniscate-bloom' })
     if (state.isError) {
-      const message = state.error instanceof Error ? state.error.message : 'Backend connection failed'
-      const missing = state.error?.setupRequired === true
+      const error = setup.error || state.error
+      const message = error instanceof Error ? error.message : 'Backend connection failed'
+      const missing = state.error?.setupRequired === true && !setup.isError
+      const selectedTarget = jsx('p', {
+        className: 'rounded-md border border-(--ui-stroke-secondary) px-4 py-3 text-sm',
+        style: { overflowWrap: 'anywhere' },
+        children: `Selected agent: ${destinationName.data || 'Connection name unavailable'} → Profile: ${profile}`
+      })
+      // ponytail: native details gives keyboard-accessible disclosure without extra state.
+      const details = jsxs('details', { className: 'text-sm text-(--ui-text-secondary)', children: [
+        jsx('summary', { className: 'cursor-pointer py-3', children: 'Setup details' }),
+        missing ? jsxs('div', { className: 'space-y-2', style: { overflowWrap: 'anywhere' }, children: [
+          jsx('p', { children: 'Setup installs and enables the Automation Lab Agent component in the selected profile. No agent restart is needed.' }),
+          jsx('p', { children: 'This uses your administrator access to the agent. Profiles keep settings separate; they do not limit OS permissions.' }),
+          BOOTSTRAP_RELEASE ? jsxs('div', { children: [
+            jsx('p', { children: `Source: ${BOOTSTRAP_RELEASE.source}` }),
+            jsx('p', { children: `Exact revision: ${BOOTSTRAP_RELEASE.revision}` })
+          ] }) : null
+        ] }) : jsx('p', { style: { overflowWrap: 'anywhere' }, children: message })
+      ] })
+      if (missing) return jsx('main', { className: 'h-full overflow-y-auto p-6', children:
+        jsxs('section', { 'aria-label': 'Set up Automation Lab', className: 'mx-auto max-w-xl rounded-lg border border-(--ui-stroke-secondary) p-6', children: [
+          jsx('h2', { className: 'text-lg font-semibold', children: 'Let’s get you set up' }),
+          jsx('p', { className: 'mt-2 mb-4 text-sm text-(--ui-text-secondary)', children: 'Set up Automation Lab to add plugins to this agent.' }),
+          selectedTarget,
+          jsx('ol', { 'aria-label': 'Setup steps', className: 'my-6 space-y-4', children: [
+            ['Set up this agent', null],
+            ['Sign in to GitHub', 'So we can check which plugins you can use.'],
+            ['Pick your plugins', null]
+          ].map(([label, why], index) => jsxs('li', { className: 'flex items-start gap-3', children: [
+            jsx('span', { 'aria-hidden': true, className: 'flex h-6 w-6 shrink-0 items-center justify-center rounded-full border border-(--ui-stroke-secondary) text-xs', children: index + 1 }),
+            jsxs('div', { children: [jsx('p', { className: 'text-sm font-medium', children: label }),
+              why ? jsx('p', { className: 'mt-1 text-sm text-(--ui-text-secondary)', children: why }) : null] })
+          ] }, label)) }),
+          jsx(Button, { disabled: !BOOTSTRAP_RELEASE || setup.isPending,
+            onClick: () => { if (active() && !setupPending.current) { setupPending.current = true; setup.mutate() } },
+            children: setup.isPending ? 'Setting up Automation Lab…' : 'Set up Automation Lab' }),
+          jsx('p', { role: 'status', className: 'mt-2 text-sm text-(--ui-text-secondary)', children: setup.isPending
+            ? 'Setting up the selected agent. You can sign in to GitHub after setup finishes.'
+            : !BOOTSTRAP_RELEASE ? 'Setup is not available yet. A reviewed release is needed before we can continue.' : '' }),
+          details
+        ] })
+      })
+      const auth = /\b401\b|unauthorized/i.test(message)
+      const denied = /\b403\b|denied|forbidden/i.test(message) && !message.includes('failed or was denied')
+      const network = /network|timed? out|fetch|offline/i.test(message)
       return jsx(ErrorState, {
-        title: missing ? `Set up Marketplace for ${destinationName.data || 'Connection name unavailable'} → ${profile}` : 'Installation destination unavailable',
-        description: missing
-          ? BOOTSTRAP_RELEASE
-            ? `You are administering this agent. Install and enable ${BOOTSTRAP_RELEASE.source} at ${BOOTSTRAP_RELEASE.revision} in profile ${profile}. Profiles separate state, not OS permissions. No backend restart is needed.`
-            : 'Publication gate: no reviewed immutable Agent release is configured. Setup is implemented but cannot install an unpublished release. Nothing has been installed or enabled.'
-          : message,
-        children: jsxs('div', { className: 'flex gap-2', children: [
-          missing ? jsx(Button, { disabled: !BOOTSTRAP_RELEASE || setup.isPending, onClick: () => { if (active() && !setupPending.current) { setupPending.current = true; setup.mutate() } }, children: setup.isPending ? 'Setting up…' : 'Set up on this agent' }) : null,
+        title: auth ? 'Sign in to your agent again' : denied ? 'The agent could not allow this step' : network ? 'We couldn’t reach your agent' : setup.isError ? 'Setup could not finish' : 'Installation destination unavailable',
+        description: auth ? 'Your agent sign-in needs attention. Reconnect to the agent, then check again.'
+          : denied ? 'Check your access with the agent’s owner. Nothing will be retried automatically.'
+          : network ? 'Check your connection, then try the destination check again.'
+          : 'Check the selected agent and profile before continuing. Open Setup details for the reason. Nothing will be retried automatically.',
+        children: jsxs('div', { className: 'space-y-3 text-left', children: [
+          selectedTarget, details,
           jsx(Button, { disabled: setup.isPending, onClick: () => { if (active()) refreshScope() }, children: 'Retry destination check' })
         ] })
       })
@@ -305,9 +347,10 @@ function createPage(ctx, scopeState, refreshScope) {
           children: [
             jsxs('div', {
               children: [
-                jsx('h1', { className: 'text-lg font-semibold', children: 'Automation Lab Marketplace' }),
+                state.data?.connected ? jsx('h1', { className: 'text-lg font-semibold', children: 'Automation Lab Marketplace' }) : null,
                 jsx('p', {
                   className: 'mt-1 text-sm text-(--ui-text-tertiary)',
+                  style: { overflowWrap: 'anywhere' },
                   children: `Installing to: ${destination}`
                 })
               ]
@@ -339,18 +382,17 @@ function createPage(ctx, scopeState, refreshScope) {
           : null,
         !state.data?.configured
           ? jsx(ErrorState, {
-              title: 'Marketplace setup incomplete',
-              description: 'The Automation Lab GitHub App has not been configured yet.'
+              title: 'Sign-in is not ready yet',
+              description: 'Ask the person who manages Automation Lab to finish setting up GitHub sign-in.'
             })
           : !state.data?.connected
             ? jsx('div', {
-                className: 'grid flex-1 place-items-center p-6',
+                className: 'min-h-0 flex-1 overflow-y-auto p-6',
                 children: flow
                   ? jsxs('div', {
-                      className: 'max-w-md text-center',
+                      className: 'mx-auto max-w-xl rounded-lg border border-(--ui-stroke-secondary) p-6',
                       children: [
-                        jsx(Codicon, { name: 'github', className: 'mb-3 text-3xl' }),
-                        jsx('h2', { className: 'text-lg font-semibold', children: 'Approve GitHub access' }),
+                        jsx('h2', { className: 'text-lg font-semibold', children: 'Finish signing in' }),
                         jsxs('ol', { className: 'mt-4 space-y-4 text-left', children: [
                           jsxs('li', { children: [
                             jsx('h3', { className: 'font-medium', children: '1. Copy code' }),
@@ -372,32 +414,27 @@ function createPage(ctx, scopeState, refreshScope) {
                           ] }),
                           jsxs('li', { children: [
                             jsx('h3', { className: 'font-medium', children: '3. Return here' }),
-                            jsx('p', { role: 'status', className: 'mt-2 text-sm text-(--ui-text-tertiary)', children: 'Waiting for GitHub approval. Your connection will finish automatically here.' })
+                            jsx('p', { role: 'status', className: 'mt-2 text-sm text-(--ui-text-tertiary)', children: 'Waiting for you to finish on GitHub. Your plugins will appear here when you’re done.' })
                           ] })
                         ] })
                       ]
                     })
                   : jsxs('div', {
-                      className: 'grid min-h-48 place-items-center gap-4 text-center',
+                      className: 'mx-auto max-w-xl rounded-lg border border-(--ui-stroke-secondary) p-6',
                       children: [
-                        jsxs('div', {
-                          children: [
-                            jsx('h2', { className: 'text-lg font-semibold', children: 'Connect your Lab access' }),
-                            jsx('p', {
-                              className: 'mt-2 text-sm text-(--ui-text-tertiary)',
-                              children: 'Connect GitHub once to confirm your Lab membership. No terminal, PAT or SSH key is needed.'
-                            }),
-                            jsx('p', {
-                              className: 'mt-2 max-w-lg text-xs text-(--ui-text-quaternary)',
-                              children: 'GitHub access and installed packages are saved to the confirmed destination above. This is machine-level administration; profiles are not security sandboxes.'
-                            })
-                          ]
-                        }),
+                        jsx('h2', { className: 'text-lg font-semibold', children: 'See your plugins' }),
+                        jsx('p', { className: 'mt-2 text-sm text-(--ui-text-secondary)', children: 'Sign in with GitHub so we can show the plugins you can use.' }),
+                        jsx('p', { className: 'my-4 text-sm text-(--ui-text-secondary)', children: 'First, get a code. Then copy it and open GitHub to sign in.' }),
                         jsx(Button, {
                           disabled: startAuth.isPending,
                           onClick: () => startAuth.mutate(),
-                          children: startAuth.isPending ? 'Starting…' : 'Connect GitHub'
-                        })
+                          children: startAuth.isPending ? 'Getting your code…' : 'Connect GitHub'
+                        }),
+                        jsx('p', { role: 'status', className: 'mt-2 text-sm text-(--ui-text-secondary)', children: startAuth.isPending ? 'Getting a sign-in code from GitHub.' : '' }),
+                        jsxs('details', { className: 'text-sm text-(--ui-text-secondary)', children: [
+                          jsx('summary', { className: 'cursor-pointer py-3', children: 'Connection details' }),
+                          jsx('p', { children: 'GitHub access and installed plugins are saved on the selected agent and profile above. This uses administrator access to the agent; profiles do not limit OS permissions.' })
+                        ] })
                       ]
                     })
               })
@@ -558,7 +595,7 @@ export default {
           count > 0 ? jsx(DialogTrigger, { asChild: true,
             children: jsx(Button, { variant: 'ghost', size: 'sm', style: { color: 'var(--ui-accent)' },
               'aria-label': `${count} updates available`, onClick: event => { opener.current = event.currentTarget; setInitialTab('updates') }, children: `+${count}` }) }) : null,
-          unknown ? jsx('span', { role: 'status', 'aria-label': 'Update check unavailable', title: 'Updates unknown: checking, disconnected or unavailable. Open Automation Lab for details.', children: '?' }) : null,
+          unknown ? jsx('span', { role: 'status', 'aria-label': 'Update check unavailable', title: 'Updates unknown: checking, disconnected or unavailable. Open Automation Lab for details.', children: 'X' }) : null,
           jsxs(DialogContent, {
             onCloseAutoFocus: event => { event.preventDefault(); (opener.current?.isConnected ? opener.current : mainTrigger.current)?.focus() },
             style: { width: '92vw', maxWidth: '1100px' },
