@@ -108,7 +108,7 @@ function createPage(ctx, scopeState, refreshScope) {
     const installPending = useRef(false)
     const [review, setReview] = useState(null)
     const [removal, setRemoval] = useState(null)
-    const [restartNeeded, setRestartNeeded] = useState(false)
+    const [restartNotice, setRestartNotice] = useState(null)
 
     const state = useQuery({
       queryKey: key('state', scope),
@@ -116,6 +116,15 @@ function createPage(ctx, scopeState, refreshScope) {
       retry: false
     })
     if (!target.current && !state.isError) target.current = state.data?.target
+    // ponytail: a reminder, not a readiness probe. Only the user dismisses it.
+    // Include the server-issued destination ID: identical paths on two agents differ.
+    const restartKey = target.current ? `restart:${JSON.stringify([connection, profile, target.current.id])}` : null
+    const restartNeeded = restartNotice ?? (restartKey ? ctx.storage.get(restartKey, null) : null)
+    const rememberRestart = kind => {
+      if (!active() || !restartKey) return
+      ctx.storage.set(restartKey, kind)
+      setRestartNotice(kind)
+    }
     const destinationName = useQuery({
       queryKey: key('connection-label', scope), retry: false,
       queryFn: async () => {
@@ -179,12 +188,14 @@ function createPage(ctx, scopeState, refreshScope) {
           body: { name, marketplace, reviewed_revision, enable: true },
           timeoutMs: 700_000
         }),
-      onSuccess: result => {
+      onSuccess: (result, item) => {
         if (!active()) return
         if (result.review_required) { setReview(result); return }
         setReview(null)
-        if (result.restart_required) setRestartNeeded(true)
-        host.notify({ kind: 'success', message: `${result.name} ${result.version} installed` })
+        const previous = catalog.data?.plugins.find(row => row.name === item.name && row.marketplace === item.marketplace)
+        const staysDisabled = previous?.installed && !previous.enabled
+        if (result.restart_required) rememberRestart(staysDisabled ? 'changes' : 'skills')
+        host.notify({ kind: 'success', message: `${result.name} ${result.version} installed.${staysDisabled ? ' This plugin stays disabled.' : result.restart_required ? ' Restart this agent to use its new skills.' : ''}` })
         void queryClient.invalidateQueries({ queryKey: key('catalog', scope) })
       },
       onError: error => active() && host.notify({ kind: 'error', message: error instanceof Error ? error.message : 'Install failed' }),
@@ -202,16 +213,16 @@ function createPage(ctx, scopeState, refreshScope) {
       onSuccess: () => {
         if (!active()) return
         setRemoval(null)
-        setRestartNeeded(true)
+        rememberRestart('changes')
         void queryClient.invalidateQueries({ queryKey: key('catalog', scope) })
       },
       onError: error => active() && host.notify({ kind: 'error', message: error.message })
     })
     const toggle = useMutation({
       mutationFn: item => rest('/enabled', { method: 'POST', body: { name: item.name, enabled: !item.enabled } }),
-      onSuccess: () => {
+      onSuccess: (result, item) => {
         if (!active()) return
-        setRestartNeeded(true)
+        if (result.restart_required) rememberRestart(item.enabled ? 'changes' : 'skills')
         void catalog.refetch()
       },
       onError: error => active() && host.notify({ kind: 'error', message: error.message })
@@ -372,11 +383,25 @@ function createPage(ctx, scopeState, refreshScope) {
           ]
         }),
         restartNeeded
-          ? jsxs('div', {
-              className: 'flex shrink-0 items-center justify-between gap-3 border-b border-(--ui-stroke-secondary) px-6 py-3',
+          ? jsxs('section', {
+              'aria-label': 'Agent restart reminder',
+              className: 'shrink-0 space-y-2 border-b border-(--ui-stroke-secondary) px-6 py-3 text-sm',
               children: [
-                jsx('span', { className: 'text-sm', children: 'Restart once when you have finished changing plugins.' }),
-                jsx(Button, { onClick: () => { if (active()) void host.restartGateway() }, children: 'Restart Hermes' })
+                jsx('p', { role: 'status', children: restartNeeded === 'skills'
+                  ? 'Installed. Restart this agent to use its new skills.'
+                  : 'Plugin changes saved. Restart this agent to apply them. Disabled plugins stay off.' }),
+                jsx('p', { children: `Agent: ${destination}` }),
+                jsx('p', { children: 'Restart the agent shown above, not just this window or a new chat. Wait for its work to finish first.' }),
+                jsxs('details', { children: [
+                  jsx('summary', { className: 'cursor-pointer', children: 'How to restart' }),
+                  jsx('p', { children: 'For a Cloud agent, use Restart for that agent in Hermes Cloud. For a local agent managed by Desktop, quit and reopen Hermes. If its agent or gateway runs independently, ask its owner to restart that process too; closing Desktop will not stop it. For a remote server, ask its owner to restart the process serving this agent and profile. A messaging gateway restart alone may not restart the Desktop agent.' }),
+                  jsx('p', { children: 'Then start a new chat and ask the agent to list its skills. This reminder does not check whether skills are ready. Hide it after you have checked; hiding it does not restart anything.' })
+                ] }),
+                jsx(Button, { variant: 'ghost', onClick: () => {
+                  if (!active() || !restartKey) return
+                  ctx.storage.remove(restartKey)
+                  setRestartNotice(false)
+                }, children: 'Hide reminder' })
               ]
             })
           : null,
@@ -515,6 +540,9 @@ function createPage(ctx, scopeState, refreshScope) {
                                   children: `${item.marketplace_label} · ${item.skills} skills · ${item.connectors} connectors`
                                 }),
                                 item.installed ? jsx('p', { className: 'mt-2 text-sm', children: `Installed ${item.installed_version || 'version unknown'} · ${item.enabled ? 'Enabled' : 'Disabled'}` }) : null,
+                                item.installed ? jsx('p', { className: 'mt-2 text-xs text-(--ui-text-secondary)', children: item.enabled
+                                  ? 'If you installed, updated or enabled this plugin since the agent last started, restart that agent, then start a new chat to use its skills.'
+                                  : 'This plugin is off. Updating or restarting does not turn it on. After Enable, restart this agent to use its skills.' }) : null,
                                 item.installed && !item.source_conflict ? jsx(Button, {
                                   variant: 'ghost', disabled: toggle.isPending || install.isPending || remove.isPending,
                                   onClick: () => toggle.mutate(item), children: item.enabled ? 'Disable' : 'Enable'
