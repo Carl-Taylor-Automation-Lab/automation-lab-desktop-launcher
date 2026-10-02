@@ -30,7 +30,7 @@ const currentScope = () => JSON.stringify([host.state.connectionId.get(), host.s
 
 // Release engineering replaces this only in a reviewed immutable launcher artifact.
 // Never populated from storage, RPC, query strings or user-entered repository URLs.
-const BOOTSTRAP_RELEASE = {"source": "https://github.com/Carl-Taylor-Automation-Lab/automation-lab-hermes-marketplace.git", "revision": "0913286a3001fa6b60b1bb6bc989b7f236c232f1"}
+const BOOTSTRAP_RELEASE = {"source": "https://github.com/Carl-Taylor-Automation-Lab/automation-lab-hermes-marketplace.git", "revision": "e9e8695ee91194f6204ecf2b61a1fbc7b24bb47b"}
 
 async function nativeCli(active, gateway, profile, argv, timeoutMs = 240_000) {
   if (!active() || !gateway || host.getGateway() !== gateway) throw new Error('Backend/profile changed; reopen the marketplace')
